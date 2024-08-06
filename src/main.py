@@ -15,6 +15,7 @@ class GraphManager:
         self.driver = GraphDatabase.driver(uri, auth=auth)
         try:
             self.driver.verify_connectivity()
+            print("--")
             print("Connected to Neo4j successfully.")
         except Exception as e:
             print(f"Failed to connect to Neo4j: {e}")
@@ -27,10 +28,10 @@ class GraphManager:
         with self.driver.session() as session:
             try:
                 # Retrieving nodes 
-                nodes = session.run("MATCH (n) RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties")
+                nodes = session.run("MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties")
                 # session.run returns Record instances of object type Result
                 # Retrieving edges
-                edges = session.run("MATCH (n)-[r]->(m) RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties")
+                edges = session.run("MATCH (n)-[r]->(m) RETURN elementId(n) AS source, elementId(m) AS target, type(r) AS type, properties(r) AS properties")
                 
                 # Converting to DataFrame format for the creation of tensors
                 nodes_df = pd.DataFrame([record.data() for record in nodes])
@@ -46,37 +47,25 @@ def transform_data(nodes_df, edges_df):
     nodes_df = nodes_df.fillna('')  # In case of NaN values, it replaces them with empty strings
 
     # Maps to numerical type using a dictionary of properties for each node
-    def map_node_properties(properties):
-        numerical = []
-        if 'sex' in properties:
-            numerical.append(sex_map.get(properties.get('sex', ''), -1))
-        if 'age' in properties:
-            numerical.append(float(properties.get('age', 0)))
-        return numerical
-    nodes_df['features'] = nodes_df['properties'].apply(map_node_properties)
-    # Extracting and converting labels separately
-    labels = nodes_df['properties'].apply(lambda props: diagnosis_map.get(props.get('diagnosis', ''), -1))
-    
-    # Maps to numerical type using a dictionary of properties for each edge
-    def map_edge_properties(row):
-        properties = row['properties']
-        edge_type = row['type']
-        
-        if edge_type == 'has_region':
-            return [
-                float(properties.get('gm_volume', 0)), # Set to 0 if missing
-                float(properties.get('regional_ct', 0)) 
-            ]
-        else:  # Other edge types
-            return [
-                float(properties.get('median_correlation', 0))  # Default value if missing
-            ]
-    
-    edges_df['edge_features'] = edges_df['properties'].apply(map_edge_properties)
+    def map_edge_properties(edge_type, properties):
+    # Ensure properties is a dictionary
+        if not isinstance(properties, dict):
+            properties = {}
 
-    # Convert edge indices to integers
-    edges_df['source'] = edges_df['source'].astype(int)  
-    edges_df['target'] = edges_df['target'].astype(int)  
+        if edge_type == 'has_region':
+            # Extract features for 'has_region' type edges
+            return [
+            float(properties.get('gm_volume', 0)),  # Default to 0 if key is missing
+            float(properties.get('regional_ct', 0))  # Default to 0 if key is missing
+        ]
+        else:  # Handle other edge types
+            return [
+            float(properties.get('median_correlation', 0))  # Default to 0 if key is missing
+        ]
+
+    # Apply the mapping function to the edges DataFrame
+    edges_df['edge_features'] = edges_df.apply(lambda row: map_edge_properties(row['type'], row['properties']), axis=1)
+
     # Conversion to PyTorch tensors
     edge_index = torch.tensor(edges_df[['source', 'target']].values.T, dtype=torch.long).contiguous()
     edge_features = torch.tensor(edges_df['edge_features'].tolist(), dtype=torch.float)
