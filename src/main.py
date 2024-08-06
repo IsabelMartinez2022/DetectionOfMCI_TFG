@@ -1,8 +1,12 @@
 from neo4j import GraphDatabase
-import csv
-import os
+import pandas as pd
+import torch
+from torch_geometric.data import Data
 
-# Connection to Neo4j
+# To convert categorical values to numerical ones
+sex_map = {'M': 0, 'F': 1}
+diagnosis_map = {'CN': 0, 'MCI': 1}
+
 uri = "neo4j+s://1bb5bfcc.databases.neo4j.io"
 auth = ("neo4j", "6lW_NKJovTAXx2YNuB-t5L2PKtEX2uLfPZaQeKS1ods")
 
@@ -19,130 +23,86 @@ class GraphManager:
     def close(self):
         self.driver.close()
 
-def load_csv_data():
-    # Loads data from regions.csv
-    with open(os.path.join('data', 'regions.csv'), 'r') as file:
-        reader = csv.DictReader(file)
-        regions = [row for row in reader]
-        print("Loaded csv data.")
+    def get_graph_data(self):
+        with self.driver.session() as session:
+            try:
+                # Retrieving nodes 
+                nodes = session.run("MATCH (n) RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties")
+                # session.run returns Record instances of object type Result
+                # Retrieving edges
+                edges = session.run("MATCH (n)-[r]->(m) RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties")
+                
+                # Converting to DataFrame format for the creation of tensors
+                nodes_df = pd.DataFrame([record.data() for record in nodes])
+                # record.data() to obtain record as dictionary
+                edges_df = pd.DataFrame([record.data() for record in edges])
+                return nodes_df, edges_df
+            except Exception as e:
+                print(f"Error retrieving graph data: {e}")
+                return pd.DataFrame(), pd.DataFrame()
 
-    # Loads data from subjects.csv
-    with open(os.path.join('data', 'subjects.csv'), 'r') as file:
-        reader = csv.DictReader(file)
-        subjects = [row for row in reader]
-        print("Loaded csv data.")
+# Conversion to suitable data types
+def transform_data(nodes_df, edges_df):
+    nodes_df = nodes_df.fillna('')  # In case of NaN values, it replaces them with empty strings
 
-    # Loads data from has_region.csv
-    with open(os.path.join('data', 'has_region.csv'), 'r') as file:
-        reader = csv.DictReader(file)
-        has_region = [row for row in reader]
-        print("Loaded csv data.")
-
-    # Loads data from is_connected_to_CN.csv
-    with open(os.path.join('data', 'is_connected_to_CN.csv'), 'r') as file:
-        reader = csv.DictReader(file)
-        connected_to_cn = [row for row in reader]
-        print("Loaded csv data.")
-
-    # Loads data from is_connected_to_MCI.csv
-    with open(os.path.join('data', 'is_connected_to_MCI.csv'), 'r') as file:
-        reader = csv.DictReader(file)
-        connected_to_mci = [row for row in reader]
-        print("Loaded csv data.")
-
-    return regions, subjects, has_region, connected_to_cn, connected_to_mci
-
-
-def create_graph(session, regions, subjects, has_region, connected_to_cn, connected_to_mci):
-
-    if not regions or not subjects or not has_region or not connected_to_cn or not connected_to_mci:
-        print("CSV data loading failed. Aborting graph creation.")
-        return
+    # Maps to numerical type using a dictionary of properties for each node
+    def map_node_properties(properties):
+        numerical = []
+        if 'sex' in properties:
+            numerical.append(sex_map.get(properties.get('sex', ''), -1))
+        if 'age' in properties:
+            numerical.append(float(properties.get('age', 0)))
+        return numerical
+    nodes_df['features'] = nodes_df['properties'].apply(map_node_properties)
+    # Extracting and converting labels separately
+    labels = nodes_df['properties'].apply(lambda props: diagnosis_map.get(props.get('diagnosis', ''), -1))
     
-    try:
-        with session.begin_transaction() as tx:
-            print("Starting to create the graph in Neo4j...")
+    # Maps to numerical type using a dictionary of properties for each edge
+    def map_edge_properties(row):
+        properties = row['properties']
+        edge_type = row['type']
         
-            # Clears out the database
-            tx.run("MATCH (n) DETACH DELETE n")
-            print("Cleared the database.")
-
-            # Creates ROI nodes
-            for region in regions:
-                tx.run("CREATE (:ROI {id: $id, region: $region})",
-                    id=int(region['roi_id']), region=region['roi_name'])
-                print("Created ROI nodes.")
-
-            # Creates subject nodes
-            for subject in subjects:
-                tx.run("CREATE (:Subject {id: $id, age: $age, sex: $sex, diagnosis: $diagnosis})",
-                    id=subject['subject_id'], age=int(subject['age']),
-                    sex=subject['sex'], diagnosis=subject['diagnosis'])
-                print("Created Subject nodes.")
-
-            # Creates subject-ROI relationships
-            for hr in has_region:
-                tx.run("""
-                MATCH (s:Subject {id: $subject_id}), (r:ROI {id: $region_id})
-                CREATE (s)-[:HAS_REGION {cortical_thickness: $cortical_thickness, volume: $volume}]->(r)
-                """, subject_id=hr['subject_id'], region_id=int(hr['region_id']),
-                    cortical_thickness=float(hr['cortical_thickness']), volume=float(hr['volume']))
-                print("Created HAS_REGION relationships.")
-
-            # Creates ROI-ROI relationships using CN correlation values
-            for conn in connected_to_cn:
-                tx.run("""
-                MATCH (r1:ROI {id: $region1}), (r2:ROI {id: $region2})
-                CREATE (r1)-[:CONNECTED_TO_CN {pearson_correlation: $median_correlation}]->(r2)
-                """, region1=int(conn['Region1']), region2=int(conn['Region2']),
-                    median_correlation=float(conn['Median_Correlation']))
-                print("Created CONNECTED_TO_CN relationships.")
-
-            # Creates ROI-ROI relationships using MCI correlation values
-            for conn in connected_to_mci:
-                tx.run("""
-                MATCH (r1:ROI {id: $region1}), (r2:ROI {id: $region2})
-                CREATE (r1)-[:CONNECTED_TO_MCI {pearson_correlation: $median_correlation}]->(r2)
-                """, region1=int(conn['Region1']), region2=int(conn['Region2']),
-                    median_correlation=float(conn['Median_Correlation']))
-            print("Created CONNECTED_TO_MCI relationships.")
-
-            tx.commit()
+        if edge_type == 'has_region':
+            return [
+                float(properties.get('gm_volume', 0)), # Set to 0 if missing
+                float(properties.get('regional_ct', 0)) 
+            ]
+        else:  # Other edge types
+            return [
+                float(properties.get('median_correlation', 0))  # Default value if missing
+            ]
     
-    except Exception as e:
-        print(f"Failed to create the neo4j graph: {e}")
-        # Rolls back the transaction on error to avoid partial updates
-        session.rollback()
-        raise
+    edges_df['edge_features'] = edges_df['properties'].apply(map_edge_properties)
 
-
-# Consulta para obtener los nodos y aristas
-def get_graph_data(session):
-    try:
-        nodes = session.run("MATCH (n) RETURN n")
-        edges = session.run("MATCH (n)-[r]->(m) RETURN n, r, m")
-        return {
-            "nodes": [record["n"].data() for record in nodes],
-            "edges": [{"from": record["n"].id, "to": record["m"].id, "relationship": record["r"].type} for record in edges]
-        }
-    except Exception as e:
-        print(f"Error retrieving graph data: {e}")
-        return [], []
+    # Convert edge indices to integers
+    edges_df['source'] = edges_df['source'].astype(int)  
+    edges_df['target'] = edges_df['target'].astype(int)  
+    # Conversion to PyTorch tensors
+    edge_index = torch.tensor(edges_df[['source', 'target']].values.T, dtype=torch.long).contiguous()
+    edge_features = torch.tensor(edges_df['edge_features'].tolist(), dtype=torch.float)
     
+    # We specify the node property "features" as the zero-layer node embeddings
+    features = torch.tensor(nodes_df['features'].tolist(), dtype=torch.float)
+    # We specify the node property "diagnosis" as class labels
+    labels = torch.tensor(labels.tolist(), dtype=torch.long)
+
+    # PyG Data object
+    data = Data(x=features, edge_index=edge_index, edge_attr=edge_features,y=labels)
+    
+    return data
+
 def main():
+    # Initialize GraphManager and retrieve data
     graph_manager = GraphManager(uri, auth)
-    regions, subjects, has_region, connected_to_cn, connected_to_mci = load_csv_data()
-       
-    with graph_manager.driver.session() as session:
-        create_graph(session, regions, subjects, has_region, connected_to_cn, connected_to_mci)
+    nodes_df, edges_df = graph_manager.get_graph_data()
     
-        # Retrieve graph data
-        node_list, edge_list = get_graph_data(session)
-        
-        # Print or process retrieved data
-        print("Nodes:", node_list)
-        print("Edges:", edge_list)
+    # Preprocess data
+    data = transform_data(nodes_df, edges_df)
+    
+    print("Data Transformation Completed")
+    print(data)
 
+    # Close connection
     graph_manager.close()
 
 if __name__ == "__main__":
