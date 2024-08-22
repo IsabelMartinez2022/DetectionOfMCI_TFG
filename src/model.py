@@ -23,7 +23,6 @@ class GCN(torch.nn.Module):
         # Activation function
         self.act = getattr(F, act) if isinstance(act, str) else act
         self.dropout = dropout
-        self.jk = jk
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
