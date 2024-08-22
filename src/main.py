@@ -1,5 +1,5 @@
 from neo4j import GraphDatabase
-from model import *
+from model import GCN
 import pandas as pd
 import torch
 import numpy as np
@@ -114,10 +114,17 @@ def main():
     # Optionally split the data into train/test sets
     transform = RandomNodeSplit(num_test=0.1, num_val=0.1)
     data = transform(data)
-    prediction= GCN()
-    optimizer = torch.optim.Adam(prediction.parameters(), lr=0.01, weight_decay=5e-4)
-    prediction.training(data,optimizer)
-    prediction.evaluation(data,optimizer)
+
+    # Initialization of the GCN model
+    num_node_features = 2
+    num_classes= 2
+    pred = GCN(in_channels=num_node_features, hidden_channels=16, out_channels=num_classes, num_layers=2, dropout=0.5)
+    optimizer = torch.optim.Adam(pred.parameters(), lr=0.01, weight_decay=5e-4)
+    
+    # Training of the model
+    pred.training(data, optimizer, num_epochs=200)
+    # Evaluation of the model
+    pred.evaluation(data)
 
     # Close connection
     graph_manager.close()
