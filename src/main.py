@@ -1,10 +1,11 @@
 from neo4j import GraphDatabase
-from model import GCN
+from src.model import training_model, evaluation_model
 import pandas as pd
 import torch
 import numpy as np
 from torch_geometric.data import HeteroData
 from torch_geometric.transforms import RandomNodeSplit
+from torch_geometric.nn import GCN
 
 # For catgorical to numerical conversion
 sex_map = {'M': 0, 'F': 1}
@@ -107,27 +108,27 @@ def main():
     
     # Preprocess data
     data = transform_data(subject_nodes, region_nodes, has_region_edges, functionally_connected_edges)
-    
     print("Data transformation completed.")
     print(data)
+    
+    # Close connection
+    graph_manager.close()
 
-    # Optionally split the data into train/test sets
+    # 20% of the nodes will be randomly selected for the test and validation sets
     transform = RandomNodeSplit(num_test=0.1, num_val=0.1)
     data = transform(data)
 
     # Initialization of the GCN model
-    num_node_features = 2
-    num_classes= 2
-    pred = GCN(in_channels=num_node_features, hidden_channels=16, out_channels=num_classes, num_layers=2, dropout=0.5)
+    num_node_features= 2
+    num_labels= 2
+    # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
+    pred = GCN(in_channels=num_node_features, hidden_channels=16, num_layers=2, out_channels=num_labels, dropout=0.5) 
+    # Using Adam optimization algorithm
     optimizer = torch.optim.Adam(pred.parameters(), lr=0.01, weight_decay=5e-4)
     
-    # Training of the model
-    pred.training(data, optimizer, num_epochs=200)
-    # Evaluation of the model
-    pred.evaluation(data)
-
-    # Close connection
-    graph_manager.close()
+    # Training and evaluation of the model
+    training_model(pred, data, optimizer)
+    evaluation_model(pred, data)
 
 if __name__ == "__main__":
     main()
