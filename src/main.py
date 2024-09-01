@@ -1,5 +1,11 @@
+import sys
+import os
+
+# Add the src directory to the sys.path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from neo4j import GraphDatabase
-from src.model import training_model, evaluation_model
+from model import training_model, evaluation_model
 import pandas as pd
 import torch
 import numpy as np
@@ -57,7 +63,7 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
 
     # Converting to pandas DataFrame format for the creation of tensors
     subject_df = pd.DataFrame(subject_nodes)
-    region_df = pd.DataFrame( region_nodes)
+    region_df = pd.DataFrame(region_nodes)
     has_region_df = pd.DataFrame(has_region_edges)
     functionally_connected_df = pd.DataFrame(functionally_connected_edges)
 
@@ -66,6 +72,9 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     subject_df['diagnosis'] = subject_df['diagnosis'].map(diagnosis_map)
     # Subject_id is a string so it is converted to an integer taking the last four digits
     has_region_df['source'] = (has_region_df['source'].str[-4:]).astype(int)
+    has_region_df['target'] = (has_region_df['target'].str[-4:]).astype(int)
+    functionally_connected_df['source'] = (functionally_connected_df['source'].str[-4:]).astype(int)
+    functionally_connected_df['target'] = (functionally_connected_df['target'].str[-4:]).astype(int)
 
     # Conversion to PyTorch tensors
     # PyG object describing a heterogeneous graph (multiple node and/or edge types) in disjunct storage objects
@@ -99,6 +108,7 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
         functionally_connected_df[['corr_mci', 'corr_cn']].values, dtype=torch.float
     )
     print(data.is_undirected()) # Returns false
+    # data = T.ToUndirected()(data) ???
     return data
 
 def main():
@@ -119,8 +129,8 @@ def main():
     data = transform(data)
 
     # Initialization of the GCN model
-    num_node_features= 2
-    num_labels= 2
+    num_node_features= 2 #sex, age
+    num_labels= 2 #CN/MCI
     # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
     pred = GCN(in_channels=num_node_features, hidden_channels=16, num_layers=2, out_channels=num_labels, dropout=0.5) 
     # Using Adam optimization algorithm
