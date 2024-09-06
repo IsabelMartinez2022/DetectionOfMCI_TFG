@@ -1,5 +1,34 @@
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F 
+from torch_geometric.nn import HeteroConv, GCNConv, SAGEConv, Linear
+
+# custom neural network module inheriting from torch.nn.Module.
+class HeteroGNN(torch.nn.Module):
+    def __init__(self, hidden_channels, out_channels, num_layers):
+        super().__init__()
+        
+        self.convs = torch.nn.ModuleList()
+        # For each layer, define different GNN layers for different edge types
+        for _ in range(num_layers):
+            conv = HeteroConv({
+                # Message passing from subjects to regions via 'has_region' edge type
+                ('subject', 'has_region', 'region'): SAGEConv((-1, -1), hidden_channels),
+                # Message passing between regions via 'is_functionally_connected' edge type
+                ('region', 'is_functionally_connected', 'region'): GCNConv(-1, hidden_channels),
+            }, aggr='sum')  # Aggregation strategy (sum, mean, etc.)
+            self.convs.append(conv)
+
+        # Final linear layer to produce output (classification for subjects)
+        self.lin = Linear(hidden_channels, out_channels)
+
+    def forward(self, x_dict, edge_index_dict, edge_attr_dict):
+        for conv in self.convs:
+            # Perform message passing and relu activation for each layer
+            x_dict = conv(x_dict, edge_index_dict, edge_attr_dict=edge_attr_dict)
+            x_dict = {key: x.relu() for key, x in x_dict.items()}
+        
+        # Return final logits for the 'subject' node type
+        return self.lin(x_dict['subject'])
 
 def training_model(model, data, optimizer, num_epochs=200): #200 iterations over the training set to update weights
     model.train()

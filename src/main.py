@@ -3,15 +3,16 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from neo4j import GraphDatabase
-from model import training_model, evaluation_model
+from model import training_model, evaluation_model, HeteroGNN
 import pandas as pd
 import torch
+import torch.nn.functional 
 import numpy as np
 from torch_geometric.data import HeteroData
 from torch_geometric.transforms import RandomNodeSplit
-from torch_geometric.nn import GCN
+import torch_geometric.transforms as T
 
-# For catgorical to numerical conversion
+# For categorical to numerical conversion
 sex_map = {'M': 0, 'F': 1}
 diagnosis_map = {'CN': 0, 'MCI': 1}
 
@@ -74,11 +75,12 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     functionally_connected_df['source'] = (functionally_connected_df['source'].str[-4:]).astype(int)
     functionally_connected_df['target'] = (functionally_connected_df['target'].str[-4:]).astype(int)
 
-    # Conversion to PyTorch tensors
+    # Conversion to PyTorch tensors (multidimensional arrays)
     # PyG object describing a heterogeneous graph (multiple node and/or edge types) in disjunct storage objects
     data = HeteroData()
     
     # Subject node feature matrix
+    # Structure: subject=torch.tensor([[age1, sex1], [age2, sex2],...])
     data['subject'].x = torch.tensor(subject_df[['age', 'sex']].values, dtype=torch.float)
     # Target to train against 
     data['subject'].y = torch.tensor(subject_df['diagnosis'].values, dtype=torch.long)
@@ -105,8 +107,16 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     data[('region', 'is_functionally_connected', 'region')].edge_attr = torch.tensor(
         functionally_connected_df[['corr_mci', 'corr_cn']].values, dtype=torch.float
     )
-    print(data.is_undirected()) # Returns false
-    # data = T.ToUndirected()(data) ???
+    # Convert to dictionaries
+    data.edge_index_dict = {
+    ('subject', 'has_region', 'region'): data[('subject', 'has_region', 'region')].edge_index,
+    ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_index
+    }
+
+    data.edge_attr_dict = {
+    ('subject', 'has_region', 'region'): data[('subject', 'has_region', 'region')].edge_attr,
+    ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_attr
+    }
     return data
 
 def main():
@@ -126,11 +136,16 @@ def main():
     transform = RandomNodeSplit(num_test=0.1, num_val=0.1)
     data = transform(data)
 
+    #print(data.is_undirected()) # Returns false
+    #data = T.ToUndirected()(data)
+    #print("Data after ToUndirected transform:")
+    #print(data)
+
     # Initialization of the GCN model
     num_node_features= 2 #sex, age
     num_labels= 2 #CN/MCI
     # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
-    pred = GCN(in_channels=num_node_features, hidden_channels=16, num_layers=2, out_channels=num_labels, dropout=0.5) 
+    pred = HeteroGNN(hidden_channels=64, num_layers=2, out_channels=num_labels) 
     # Using Adam optimization algorithm
     optimizer = torch.optim.Adam(pred.parameters(), lr=0.01, weight_decay=5e-4)
     
