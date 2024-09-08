@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional 
 import numpy as np
 from torch_geometric.data import HeteroData
-from torch_geometric.transforms import RandomNodeSplit
-from torch_geometric.utils import to_undirected
+#from torch_geometric.transforms import RandomNodeSplit
+#from torch_geometric.utils import to_undirected
 
 # For categorical to numeric,ial conversion
 sex_map = {'M': 0, 'F': 1}
@@ -57,6 +57,22 @@ class GraphManager:
                 return [], [], [], []
 
 
+def normalize_indices(subject_df, region_df, has_region_df, functionally_connected_df):
+    # Create a mapping from Neo4j indices to a zero-based index
+    subject_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(subject_df['id'])}
+    region_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(region_df['id'])}
+
+    # Normalizing subject-region edge indices so they go from 0-(max-1)
+    has_region_df['source'] = has_region_df['source'].map(subject_id_map)
+    has_region_df['target'] = has_region_df['target'].map(region_id_map)
+
+    # Normalize region-region functional connection edge indices
+    functionally_connected_df['source'] = functionally_connected_df['source'].map(region_id_map)
+    functionally_connected_df['target'] = functionally_connected_df['target'].map(region_id_map)
+
+    return subject_df, region_df, has_region_df, functionally_connected_df
+
+
 # Conversion to suitable data types
 def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_connected_edges):
 
@@ -69,11 +85,14 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     # Maps categorical values to numerical ones
     subject_df['sex'] = subject_df['sex'].map(sex_map)
     subject_df['diagnosis'] = subject_df['diagnosis'].map(diagnosis_map)
+    # NOT COMPATIBLE WITH PYTHON
     # Subject_id is a string so it is converted to an integer taking the last four digits
-    has_region_df['source'] = (has_region_df['source'].str[-4:]).astype(int)
-    has_region_df['target'] = (has_region_df['target'].str[-4:]).astype(int)
-    functionally_connected_df['source'] = (functionally_connected_df['source'].str[-4:]).astype(int)
-    functionally_connected_df['target'] = (functionally_connected_df['target'].str[-4:]).astype(int)
+    #has_region_df['source'] = (has_region_df['source'].str[-4:]).astype(int)
+    #has_region_df['target'] = (has_region_df['target'].str[-4:]).astype(int)
+    #functionally_connected_df['source'] = (functionally_connected_df['source'].str[-4:]).astype(int)
+    #functionally_connected_df['target'] = (functionally_connected_df['target'].str[-4:]).astype(int)
+
+    subject_df, region_df, has_region_df, functionally_connected_df = normalize_indices(subject_df, region_df, has_region_df, functionally_connected_df)
 
     # Conversion to PyTorch tensors (multidimensional arrays)
     # PyG object describing a heterogeneous graph (multiple node and/or edge types) in disjunct storage objects
@@ -87,6 +106,7 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
 
     # Region node feature matrix
     # Using index as dummy feature
+    # MAYBE HEMISPHERES???
     data['region'].x = torch.tensor(region_df.index.values, dtype=torch.float).unsqueeze(1) 
 
     # Graph connectivity with shape [2, num_edges] for has_region edges
@@ -97,7 +117,6 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     # Has_region edge feature matrix with shape [num_edges, num_edge_features]= [num_edges, 2]
     data[('region', 'has_region', 'subject')].edge_attr = torch.tensor(
         has_region_df[['gm_volume', 'regional_ct']].values, dtype=torch.float)
-
 
     # Graph connectivity with shape [2, num_edges] for is_functionally_connected edges
     functionally_connected_edge_index = np.array([functionally_connected_df['source'].tolist(), functionally_connected_df['target'].tolist()])
@@ -127,6 +146,8 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
 
     return data
 
+
+# FOR DEBUGGING
 def check_hetero_data(x_dict, edge_index_dict, edge_attr_dict, expected_edge_types, model):
     # Check node feature tensors
     print("\nNode Features Check (x_dict):")
@@ -142,12 +163,8 @@ def check_hetero_data(x_dict, edge_index_dict, edge_attr_dict, expected_edge_typ
     for edge_type in edge_index_dict:
         assert edge_type in expected_edge_types, f"Edge type {edge_type} is not defined in the model's layers!"
         print("All edge types are valid.")
-    
 
-
-    print("\nModel Configuration Check:")
-    print(f"Expected Edge Types in Model: {expected_edge_types}")
-
+# FOR DEBUGGING
 def run_debug_checks(model, data):
     # Extract expected edge types from model
     expected_edge_types = set()
@@ -162,11 +179,11 @@ def run_debug_checks(model, data):
 
 
 def main():
-    # Initialize GraphManager and retrieve data
+    # Initializing GraphManager and retrieving data
     graph_manager = GraphManager(uri, auth)
     subject_nodes, region_nodes, has_region_edges, functionally_connected_edges = graph_manager.get_graph_data()
-    
-    # Preprocess data
+
+    # Preprocessing data
     data = transform_data(subject_nodes, region_nodes, has_region_edges, functionally_connected_edges)
     print("Data transformation completed.")
     print(data)
@@ -175,18 +192,45 @@ def main():
     graph_manager.close()
 
     # 20% of the nodes will be randomly selected for the test and validation sets
-    transform = RandomNodeSplit(num_test=0.1, num_val=0.1)
+    #transform = RandomNodeSplit(num_test=0.1, num_val=0.1,key='subject')
+    #transform(data)
+    
+    num_subjects = data['subject'].x.size(0)  # Total number of 'subject' nodes
+    # Set proportions for train/val/test splits
+    train_ratio = 0.8
+    val_ratio = 0.1
+    test_ratio = 0.1
+    # Compute sizes for each split
+    train_size = int(train_ratio * num_subjects)
+    val_size = int(val_ratio * num_subjects)
+    test_size = num_subjects - train_size - val_size  # Ensure sum adds to num_subjects
+    print(test_size)
+    # Generate a random permutation of node indices
+    perm = torch.randperm(num_subjects)
 
-    edge_indices = data.edge_index_dict[('region', 'is_functionally_connected', 'region')]
-    node_indices = data.x_dict['region'].size(0)  # Number of nodes in the 'region' node type
+    # Initialize masks for train, val, and test sets
+    train_mask = torch.zeros(num_subjects, dtype=torch.bool)
+    val_mask = torch.zeros(num_subjects, dtype=torch.bool)
+    test_mask = torch.zeros(num_subjects, dtype=torch.bool)
 
-    # Check for invalid edge indices
-    invalid_indices = edge_indices[edge_indices >= node_indices]
-    if invalid_indices.numel() > 0:
-        print(f"Invalid edge indices found: {invalid_indices}")
+    # Assign True values to the appropriate split indices
+    train_mask[perm[:train_size]] = True
+    val_mask[perm[train_size:train_size + val_size]] = True
+    test_mask[perm[train_size + val_size:]] = True
+
+    # Assign the masks to the 'subject' node type
+    data['subject'].train_mask = train_mask
+    data['subject'].val_mask = val_mask
+    data['subject'].test_mask = test_mask
+
+    #   Verify the mask creation
+    print("Train Mask:", data['subject'].train_mask)
+    print("Validation Mask:", data['subject'].val_mask)
+    print("Test Mask:", data['subject'].test_mask)
+
         
     # Initialization of the GNN model
-    num_node_features= 2 #sex, age
+    #num_node_features= 2 #sex, age
     num_labels= 2 #CN/MCI
     # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
     pred = HeteroGNN(hidden_channels=64, out_channels=num_labels, num_layers=2, ) 

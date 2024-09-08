@@ -25,7 +25,7 @@ class HeteroGNN(torch.nn.Module):
         for conv in self.convs:
             out_dict = {}
             for edge_type, conv_layer in conv.convs.items():
-                # Check if the layer supports edge_attr by looking at its argument list
+                # Checks if the layer supports edge_attr by looking at its argument list
                 if hasattr(conv_layer, 'edge_attr') and edge_type in edge_attr_dict:
                     out_dict[edge_type[2]] = conv_layer(
                         x_dict[edge_type[0]],
@@ -33,7 +33,6 @@ class HeteroGNN(torch.nn.Module):
                         edge_attr=edge_attr_dict[edge_type]
                     )
                 else:
-                    # Do not pass edge_attr if the layer doesn't support it
                     out_dict[edge_type[2]] = conv_layer(
                         x_dict[edge_type[0]],
                         edge_index_dict[edge_type]
@@ -49,16 +48,32 @@ def training_model(model, data, optimizer, num_epochs=200): #200 iterations over
     for epoch in range(num_epochs):
         # Setting gradient to 0 for initialization
         optimizer.zero_grad()
-        # Forward pass is called implicitly to train subject nodes
-        print(data[('region', 'has_region', 'subject')].edge_attr)
-        print(data[('region', 'is_functionally_connected', 'region')].edge_attr)
 
-        out = model(data.x_dict, data.edge_index_dict, data.edge_attr_dict)
+        # Forward pass is called implicitly to train subject nodes
+        out = model(data.x_dict, data.edge_index_dict, data.edge_attr_dict) #tensor output
         
-        # To get log probabilities from the output of the last linear layer
+        # Get log probabilities
         probs = F.log_softmax(out, dim=1)
+
+        # Create a mask for subject nodes
+        # Assuming `data['subject'].train_mask` is a boolean mask for `subject` nodes
+        num_subject_nodes = data['subject'].train_mask.sum().item()
+
+        # Check if the `num_total_nodes` aligns with the number of nodes for which you have predictions
+        num_total_nodes = probs.shape[0]  # This should be the total number of nodes in your graph
+
+        if num_total_nodes != len(data['subject'].train_mask):
+            raise ValueError("Mismatch between total number of nodes and the length of the train mask")
+
+        # Create an index tensor for subject nodes
+        subject_indices = torch.arange(num_total_nodes)[data['subject'].train_mask]
+
+        # Filter for subject nodes
+        train_probs = probs[subject_indices]
+        train_labels = data['subject'].y[subject_indices]
+        
         # Error between predicted and true values in the training nodes using Negative Log Likelihood Loss
-        loss = F.nll_loss(probs[data['subject'].train_mask], data['subject'].y[data['subject'].train_mask])
+        loss = F.nll_loss(train_probs, train_labels)
         
         # Backpropagation: computing the gradient of the loss function with respect to each model parameter
         loss.backward()
