@@ -230,7 +230,6 @@ def main():
     print("Train Mask:", data['subject'].train_mask)
     print("Validation Mask:", data['subject'].val_mask)
     print("Test Mask:", data['subject'].test_mask)
-
         
     # Initialization of the GNN model
     #num_node_features= 2 #sex, age
@@ -245,9 +244,7 @@ def main():
     print(f"Data.x_dict type: {type(data.x_dict)}")
     # Training and evaluation of the model
     training_model(pred, data, optimizer)
-    
-    out= evaluation_model(pred, data)
-    print(out)
+    evaluation_model(pred, data)
 
 if __name__ == "__main__":
     main()
