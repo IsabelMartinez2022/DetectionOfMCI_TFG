@@ -12,6 +12,9 @@ from torch_geometric.data import HeteroData
 #from torch_geometric.transforms import RandomNodeSplit
 #from torch_geometric.utils import to_undirected
 
+# Check for GPU availability
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 # For categorical to numeric,ial conversion
 sex_map = {'M': 0, 'F': 1}
 diagnosis_map = {'CN': 0, 'MCI': 1}
@@ -233,20 +236,18 @@ def main():
     #num_node_features= 2 #sex, age
     num_labels= 2 #CN/MCI
     # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
-    pred = HeteroGNN(hidden_channels=64, out_channels=num_labels, num_layers=2, ) 
+    pred = HeteroGNN(hidden_channels=64, out_channels=num_labels, num_layers=2).to(device)
 
     run_debug_checks(pred, data)
 
     # Using Adam optimization algorithm
-    optimizer = torch.optim.Adam(pred.parameters(), lr=0.01, weight_decay=5e-4)
+    optimizer = torch.optim.Adam(pred.parameters(), lr=0.001, weight_decay=1e-4)
     print(f"Data.x_dict type: {type(data.x_dict)}")
     # Training and evaluation of the model
     training_model(pred, data, optimizer)
     
-    print(f"Data.x_dict type: {type(data.x_dict)}")
-    evaluation_model(pred, data)
-    
-    print(f"Data.x_dict type: {type(data.x_dict)}")
+    out= evaluation_model(pred, data)
+    print(out)
 
 if __name__ == "__main__":
     main()
