@@ -10,7 +10,7 @@ import torch.nn.functional
 import numpy as np
 from torch_geometric.data import HeteroData
 #from torch_geometric.transforms import RandomNodeSplit
-#from torch_geometric.utils import to_undirected
+from torch_geometric.utils import to_undirected
 
 # Check for GPU availability
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -130,12 +130,24 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
         functionally_connected_df[['corr_mci', 'corr_cn']].values, dtype=torch.float)
 
     # Convert to dictionaries
+
+    data.x_dict = {
+    'subject': data['subject'].x,
+    'region': data['region'].x,
+    }   
+
+    data.y_dict = {
+    'subject': data['subject'].y
+    }
+    
     data.edge_index_dict = {
     ('region', 'has_region', 'subject'): data[('region', 'has_region', 'subject')].edge_index,
     ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_index
     #('region', 'rev_has_region', 'subject'): to_undirected(data[('subject', 'has_region', 'region')].edge_index)
     }
 
+    data.edge_index_dict[('region', 'has_region', 'subject')] = to_undirected(data.edge_index_dict[('region', 'has_region', 'subject')])
+    
     data.edge_attr_dict = {
     ('region', 'has_region', 'subject'): data[('region', 'has_region', 'subject')].edge_attr,
     ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_attr

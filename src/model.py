@@ -110,7 +110,7 @@ def training_model(model, data, optimizer, num_epochs=200): #200 iterations over
         #loss = F.nll_loss(train_probs, train_labels)
         
         # Backpropagation: computing the gradient of the loss function with respect to each model parameter
-        loss.backward()
+        #loss.backward()
         # Model update based on gradients
         optimizer.step()
         
