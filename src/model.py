@@ -25,23 +25,26 @@ class HeteroGNN(torch.nn.Module):
     def forward(self, x_dict, edge_index_dict, edge_attr_dict):
         for conv in self.convs:
             out_dict = {}
-            for edge_type, conv_layer in conv.convs.items():
+            for edge_type, conv in conv.convs.items():
+
+                # Gives error all the time
+                out_dict = conv(x_dict, edge_index_dict, edge_attr_dict)
+
                 # Extract edge index and edge attributes
                 edge_index = edge_index_dict[edge_type]
-                edge_attr = edge_attr_dict.get(edge_type)  # edge_attr may not exist for all edges
+                edge_attr = edge_attr_dict.get(edge_type)  # edge_attr does not exist for GCNconv
 
                 # If edge attributes exist, concatenate them with node features
-                if edge_attr is not None:
-                    source_nodes, _ = edge_index
-                    node_features = x_dict[edge_type[0]]  # Source node features
+                # if edge_attr is not None:
+                    #source_nodes, _ = edge_index
+                    #node_features = x_dict[edge_type[0]]  # Source node features
                 
-                    # Concatenate edge attributes to the node features
-                    concatenated_input = torch.cat([node_features[source_nodes], edge_attr], dim=-1)
-                
-                    out_dict[edge_type[2]] = conv_layer(concatenated_input, edge_index)
-                else:
+                    # Concatenating edge attributes to the node features to include them during convolution
+                    #concatenated_input = torch.cat([node_features[source_nodes], edge_attr], dim=-1)
+                    #out_dict[edge_type[2]] = conv_layer(concatenated_input, edge_index)
+                # else:
                     # If no edge attributes, just use the node features as usual
-                    out_dict[edge_type[2]] = conv_layer(x_dict[edge_type[0]], edge_index)
+                    #out_dict[edge_type[2]] = conv_layer(x_dict[edge_type[0]], edge_index)
 
             x_dict = out_dict
 

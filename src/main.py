@@ -61,15 +61,14 @@ class GraphManager:
 
 
 def normalize_indices(subject_df, region_df, has_region_df, functionally_connected_df):
-    # Create a mapping from Neo4j indices to a zero-based index
+    
+    # Mapping Neo4j indices to a 0-(max-1) format
     subject_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(subject_df['id'])}
     region_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(region_df['id'])}
 
-    # Normalizing subject-region edge indices so they go from 0-(max-1)
     has_region_df['source'] = has_region_df['source'].map(subject_id_map)
     has_region_df['target'] = has_region_df['target'].map(region_id_map)
 
-    # Normalize region-region functional connection edge indices
     functionally_connected_df['source'] = functionally_connected_df['source'].map(region_id_map)
     functionally_connected_df['target'] = functionally_connected_df['target'].map(region_id_map)
 
@@ -129,8 +128,7 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     data[('region', 'is_functionally_connected', 'region')].edge_attr = torch.tensor(
         functionally_connected_df[['corr_mci', 'corr_cn']].values, dtype=torch.float)
 
-    # Convert to dictionaries
-
+    # Conversion to dictionaries
     data.x_dict = {
     'subject': data['subject'].x,
     'region': data['region'].x,
@@ -213,17 +211,14 @@ def main():
     num_subjects = data['subject'].x.size(0)  # Total number of 'subject' nodes
     # Set proportions for train/val/test splits
     train_ratio = 0.8
-    val_ratio = 0.1
-    test_ratio = 0.1
+    val_ratio = 0.1 # (test_ratio = 0.1)
     # Compute sizes for each split
     train_size = int(train_ratio * num_subjects)
     val_size = int(val_ratio * num_subjects)
-    test_size = num_subjects - train_size - val_size  # Ensure sum adds to num_subjects
-    print(test_size)
-    # Generate a random permutation of node indices
+    # Random permutation of node indices
     perm = torch.randperm(num_subjects)
 
-    # Initialize masks for train, val, and test sets
+    # Initializing masks for train, val, and test sets
     train_mask = torch.zeros(num_subjects, dtype=torch.bool)
     val_mask = torch.zeros(num_subjects, dtype=torch.bool)
     test_mask = torch.zeros(num_subjects, dtype=torch.bool)
