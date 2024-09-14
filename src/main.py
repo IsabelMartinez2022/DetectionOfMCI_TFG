@@ -1,8 +1,6 @@
 import sys
 import os
 import matplotlib.pyplot as plt  # Importar Matplotlib para graficar
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -19,13 +17,13 @@ sex_map = {'M': 0, 'F': 1}
 diagnosis_map = {'CN': 0, 'MCI': 1}
 
 # Rutas a los archivos CSV en la carpeta 'data'
-data_dir = '/workspaces/DetectionOfMCI_TFG/data'  # Cambia a la ruta relativa de la carpeta 'data'
+data_dir = '../data'
 has_region_path = os.path.join(data_dir, 'has_region.csv')
-is_connected_to_CN_path = os.path.join(data_dir, '../data/is_connected_to_CN.csv')
-is_connected_to_MCI_path = os.path.join(data_dir, '../data/is_connected_to_MCI.csv')
-is_functionally_connected_path = os.path.join(data_dir, '../data/is_functionally_connected.csv')
-regions_path = os.path.join(data_dir, '../data/regions.csv')
-subjects_path = os.path.join(data_dir, '../data/subjects.csv')
+is_connected_to_CN_path = os.path.join(data_dir, 'is_connected_to_CN.csv')
+is_connected_to_MCI_path = os.path.join(data_dir, 'is_connected_to_MCI.csv')
+is_functionally_connected_path = os.path.join(data_dir, 'is_functionally_connected.csv')
+regions_path = os.path.join(data_dir, 'regions.csv')
+subjects_path = os.path.join(data_dir, 'subjects.csv')
 
 # Cargar CSVs
 has_region = pd.read_csv(has_region_path)
@@ -48,13 +46,20 @@ data['region'].x = torch.eye(len(regions))
 # Agregar características de nodos para 'subject' (sexo, edad, diagnóstico)
 data['subject'].x = torch.tensor(subjects[['sex', 'age', 'diagnosis']].values, dtype=torch.float)
 
-# Agregar las relaciones entre sujetos y regiones
-data['subject', 'has_region', 'region'].edge_index = torch.tensor(
-    [has_region['subject_id'].astype('category').cat.codes.values, has_region['region_id'] - 1], dtype=torch.long)
+# Convertir listas a arrays de NumPy antes de convertirlas a tensores
+subject_id_codes = has_region['subject_id'].astype('category').cat.codes.values
+region_ids = has_region['region_id'].values - 1
+
+# Asegurarse de que los índices de los bordes se convierten en arrays de NumPy
+edge_index_subject_region = np.array([subject_id_codes, region_ids], dtype=np.int64)
+data['subject', 'has_region', 'region'].edge_index = torch.tensor(edge_index_subject_region, dtype=torch.long)
 
 # Agregar las conexiones entre regiones (is_functionally_connected)
 edges_region = np.array([is_functionally_connected['Region1'] - 1, is_functionally_connected['Region2'] - 1])
 data['region', 'is_functionally_connected', 'region'].edge_index = torch.tensor(edges_region, dtype=torch.long)
+
+# Añadir la relación inversa entre 'region' y 'subject' para que los nodos de 'subject' reciban mensajes
+data['region', 'rev_has_region', 'subject'].edge_index = data['subject', 'has_region', 'region'].edge_index.flip(0)
 
 # Definir el modelo, optimizador y parámetros de entrenamiento
 hidden_channels = 64
@@ -94,7 +99,6 @@ plt.plot(range(1, epochs + 1), losses, label="Training Loss")
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Evolución de la pérdida durante el entrenamiento')
-plt.legend()
-plt.grid(True)
-plt.savefig('training_loss.png')  # Guardar la visualización en un archivo
-print("Gráfica de pérdida guardada como 'training_loss.png'")
+plt.legend
+plt.savefig('training_loss.png')
+plt.show()
