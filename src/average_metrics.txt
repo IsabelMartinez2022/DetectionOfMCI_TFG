@@ -1,0 +1,4 @@
+Métricas promedio tras validación cruzada:
+Precision: 0.5576
+Recall: 0.5576
+F1-Score: 0.5576

@@ -1,7 +1,7 @@
-# model.py
 import torch
 import torch.nn.functional as F
 import torch_geometric.nn as gnn
+from torch.cuda.amp import GradScaler, autocast
 
 # Definición del modelo HeteroGNN
 class HeteroGNN(torch.nn.Module):
@@ -21,7 +21,7 @@ class HeteroGNN(torch.nn.Module):
             }, aggr='sum')
             self.convs.append(conv)
         
-        # Capas lineales finales para producir las salidas
+        # Capa lineal final para producir la salida
         self.lin_subject = torch.nn.Linear(hidden_channels, out_channels)
         self.lin_region = torch.nn.Linear(hidden_channels, out_channels)
 
@@ -34,3 +34,36 @@ class HeteroGNN(torch.nn.Module):
             'subject': self.lin_subject(x_dict['subject']),
             'region': self.lin_region(x_dict['region'])
         }
+
+# Función para entrenar el modelo y guardar los pesos
+def pretrain_model(data, model, optimizer, epochs=50, lr=0.01):
+    scaler = GradScaler()  # Para entrenamiento con precisión mixta
+
+    model.train()
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+        with autocast():  # Habilitar precisión mixta
+            out = model(data.x_dict, data.edge_index_dict)
+            target = torch.randint(0, 2, (len(data['subject'].x),))  # Target ficticio para demostración
+            loss = F.cross_entropy(out['subject'], target)
+        
+        # Backpropagación y optimización
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        # Mostrar progreso
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}")
+
+    # Guardar los pesos del modelo
+    model_file = 'trained_heteroGNN_model.pth'
+    torch.save(model.state_dict(), model_file)
+    print(f"Modelo guardado en {model_file}")
+
+    return model_file
+
+# Función para cargar un modelo guardado
+def load_model(model_file, hidden_channels, out_channels, num_layers):
+    model = HeteroGNN(hidden_channels=hidden_channels, out_channels=out_channels, num_layers=num_layers)
+    model.load_state_dict(torch.load(model_file))
+    return model
