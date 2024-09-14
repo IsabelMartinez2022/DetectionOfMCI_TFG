@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import numpy as np
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import to_undirected
 from model import HeteroGNN, pretrain_model
@@ -70,6 +71,8 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
 # Lista para guardar las pérdidas (losses)
 losses = []
+all_predictions = []
+all_targets = []
 
 # Entrenar el modelo y guardar los pesos
 epochs = 50
@@ -85,6 +88,11 @@ for epoch in range(epochs):
     # Guardar la pérdida actual
     losses.append(loss.item())
     
+    # Predecir etiquetas
+    predictions = out['subject'].argmax(dim=1)
+    all_predictions.extend(predictions.cpu().numpy())
+    all_targets.extend(target.cpu().numpy())
+    
     # Mostrar progreso
     print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}")
 
@@ -99,6 +107,24 @@ plt.plot(range(1, epochs + 1), losses, label="Training Loss")
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Evolución de la pérdida durante el entrenamiento')
-plt.legend
-plt.savefig('training_loss.png')
-plt.show()
+plt.legend()
+plt.grid(True)
+plt.savefig('training_loss.png')  # Guardar la visualización en un archivo
+print("Gráfica de pérdida guardada como 'training_loss.png'")
+
+# Generar la matriz de confusión
+cm = confusion_matrix(all_targets, all_predictions)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['CN', 'MCI'])
+disp.plot(cmap=plt.cm.Blues)
+plt.title("Matriz de confusión")
+plt.savefig('confusion_matrix.png')
+print("Matriz de confusión guardada como 'confusion_matrix.png'")
+
+# Reporte de clasificación (precisión, recall, F1-score)
+classification_rep = classification_report(all_targets, all_predictions, target_names=['CN', 'MCI'])
+print("Reporte de clasificación:\n", classification_rep)
+
+# Guardar el reporte de clasificación en un archivo de texto
+with open("classification_report.txt", "w") as f:
+    f.write(classification_rep)
+print("Reporte de clasificación guardado como 'classification_report.txt'")
