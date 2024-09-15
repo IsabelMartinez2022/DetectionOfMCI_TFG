@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import to_undirected
-from model import HeteroGNN, pretrain_model
+from src.model3 import HeteroGNN, pretrain_model
 
 # Verificación de GPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
