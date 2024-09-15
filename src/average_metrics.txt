@@ -1,4 +1,5 @@
 Métricas promedio tras validación cruzada:
-Precision: 0.5576
-Recall: 0.5576
-F1-Score: 0.5576
+Precision: 0.5340
+Recall: 0.5895
+F1-Score: 0.5562
+Accuracy: 0.5045

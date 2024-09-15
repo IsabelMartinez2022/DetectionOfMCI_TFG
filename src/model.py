@@ -11,20 +11,30 @@ class HeteroGNN(torch.nn.Module):
         self.convs = torch.nn.ModuleList()
         self.norms = torch.nn.ModuleList()
 
+        # Capa lineal inicial para proyectar las características de los nodos 'subject' y 'region' a hidden_channels
+        self.lin_subject = torch.nn.Linear(3, hidden_channels)  # Los sujetos tienen 3 características (sexo, edad, diagnóstico)
+        self.lin_region = torch.nn.Linear(hidden_channels, hidden_channels)  # Proyección de las características de los nodos 'region'
+
         for _ in range(num_layers):
             conv = gnn.HeteroConv({
-                ('subject', 'has_region', 'region'): gnn.GraphConv((-1, -1), hidden_channels),
-                ('region', 'rev_has_region', 'subject'): gnn.GraphConv((-1, -1), hidden_channels),
-                ('region', 'is_functionally_connected', 'region'): gnn.GATConv(-1, hidden_channels, heads=2)
+                # Aseguramos que ambas convoluciones usen hidden_channels como tamaño de entrada y salida
+                ('subject', 'has_region', 'region'): gnn.GraphConv(hidden_channels, hidden_channels),
+                ('region', 'rev_has_region', 'subject'): gnn.GraphConv(hidden_channels, hidden_channels),
+                ('region', 'is_functionally_connected', 'region'): gnn.GATConv(hidden_channels, hidden_channels, heads=1)
             }, aggr='sum')
             self.convs.append(conv)
             self.norms.append(BatchNorm(hidden_channels))
 
-        self.lin_subject = torch.nn.Linear(hidden_channels, out_channels)
-        self.lin_region = torch.nn.Linear(hidden_channels, out_channels)
+        # Capas lineales finales para producir las salidas
+        self.lin_output_subject = torch.nn.Linear(hidden_channels, out_channels)
+        self.lin_output_region = torch.nn.Linear(hidden_channels, out_channels)
         self.dropout = dropout
 
     def forward(self, x_dict, edge_index_dict):
+        # Proyectar las características del nodo 'subject' y 'region' a hidden_channels
+        x_dict['subject'] = self.lin_subject(x_dict['subject'])
+        x_dict['region'] = self.lin_region(x_dict['region'])
+        
         for conv, norm in zip(self.convs, self.norms):
             x_dict = conv(x_dict, edge_index_dict)
             x_dict['subject'] = norm(x_dict['subject'])  # Normalización de nodos 'subject'
@@ -35,6 +45,6 @@ class HeteroGNN(torch.nn.Module):
             x_dict['region'] = F.dropout(x_dict['region'], p=self.dropout, training=self.training)
             
         return {
-            'subject': self.lin_subject(x_dict['subject']),
-            'region': self.lin_region(x_dict['region'])
+            'subject': self.lin_output_subject(x_dict['subject']),
+            'region': self.lin_output_region(x_dict['region'])
         }

@@ -5,9 +5,10 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import numpy as np
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score, f1_score, precision_score, recall_score, roc_curve, auc
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, f1_score, precision_score, recall_score, roc_curve, auc
 from sklearn.model_selection import KFold
 from torch_geometric.data import HeteroData
+from sklearn.metrics import precision_recall_curve
 from model import HeteroGNN
 
 # Configuración de GPU
@@ -38,7 +39,12 @@ subjects['diagnosis'] = subjects['diagnosis'].map(diagnosis_map)
 
 # Crear el grafo heterogéneo
 data = HeteroData()
-data['region'].x = torch.eye(len(regions))
+
+# Cambiar la inicialización de las características de 'region' para que coincidan con hidden_channels
+hidden_channels = 64
+data['region'].x = torch.randn(len(regions), hidden_channels)  # Inicialización aleatoria con el tamaño correcto
+
+# Proyectar las características de los nodos 'subject'
 data['subject'].x = torch.tensor(subjects[['sex', 'age', 'diagnosis']].values, dtype=torch.float)
 
 # Verificar índices de regiones y agregar relaciones
@@ -54,7 +60,6 @@ data['region', 'rev_has_region', 'subject'].edge_index = data['subject', 'has_re
 # Definir los parámetros de validación cruzada
 k_folds = 5
 kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
-hidden_channels = 64
 out_channels = 2
 num_layers = 2
 
