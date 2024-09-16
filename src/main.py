@@ -1,283 +1,250 @@
 import sys
 import os
-import logging
-import matplotlib.pyplot as plt
-import pandas as pd
-import torch
-import torch.nn.functional as F
-import numpy as np
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, f1_score, precision_score, recall_score, roc_curve, auc, precision_recall_curve
-from sklearn.model_selection import KFold
-from torch_geometric.data import HeteroData
-from model import HeteroGNN
-
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-# Configuración de GPU
+from neo4j import GraphDatabase
+from model import training_model, evaluation_model, HeteroGNN
+import pandas as pd
+import torch
+import torch.nn.functional 
+import numpy as np
+from torch_geometric.data import HeteroData
+#from torch_geometric.transforms import RandomNodeSplit
+#from torch_geometric.utils import to_undirected
+
+# Check for GPU availability
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Configurar logging
-logging.basicConfig(filename='training.log', level=logging.INFO)
-
-# Rutas a los archivos CSV en la carpeta 'data'
-data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
-subjects_path = os.path.join(data_dir, 'subjects.csv')
-has_region_path = os.path.join(data_dir, 'has_region.csv')
-is_functionally_connected_path = os.path.join(data_dir, 'is_functionally_connected.csv')
-regions_path = os.path.join(data_dir, 'regions.csv')
-
-# Cargar CSVs
-subjects = pd.read_csv(subjects_path)
-has_region = pd.read_csv(has_region_path)
-is_functionally_connected = pd.read_csv(is_functionally_connected_path)
-regions = pd.read_csv(regions_path)
-
-# Preprocesar los datos de los sujetos
+# For categorical to numeric,ial conversion
 sex_map = {'M': 0, 'F': 1}
 diagnosis_map = {'CN': 0, 'MCI': 1}
-subjects['sex'] = subjects['sex'].map(sex_map)
-subjects['diagnosis'] = subjects['diagnosis'].map(diagnosis_map)
 
-# Crear el grafo heterogéneo
-data = HeteroData()
+uri = "neo4j+s://1bb5bfcc.databases.neo4j.io"
+auth = ("neo4j", "6lW_NKJovTAXx2YNuB-t5L2PKtEX2uLfPZaQeKS1ods")
 
-# Cambiar la inicialización de las características de 'region' para que coincidan con hidden_channels
-hidden_channels = 64
-data['region'].x = torch.randn(len(regions), hidden_channels)  # Inicialización aleatoria con el tamaño correcto
+class GraphManager:
+    def __init__(self, uri, auth):
+        self.driver = GraphDatabase.driver(uri, auth=auth)
+        try:
+            self.driver.verify_connectivity()
+            print("--")
+            print("Connected to Neo4j successfully.")
+        except Exception as e:
+            print(f"Failed to connect to Neo4j: {e}")
+            exit(1)
 
-# Proyectar las características de los nodos 'subject'
-data['subject'].x = torch.tensor(subjects[['sex', 'age', 'diagnosis']].values, dtype=torch.float)
+    def close(self):
+        self.driver.close()
 
-# Verificar índices de regiones y agregar relaciones
-subject_id_codes = has_region['subject_id'].astype('category').cat.codes.values
-region_ids = has_region['region_id'].values - 1
-edge_index_subject_region = np.array([subject_id_codes, region_ids], dtype=np.int64)
-data['subject', 'has_region', 'region'].edge_index = torch.tensor(edge_index_subject_region, dtype=torch.long)
+    # Retrieving graph as a list of dictionaries
+    def get_graph_data(self):
+        with self.driver.session() as session:
+            try:
+                # Retrieving nodes
+                subject_nodes = session.run("MATCH (s:Subject) RETURN s.subject_id AS id, s.diagnosis AS diagnosis, s.age AS age, s.sex AS sex")
+                region_nodes = session.run("MATCH (r:Region) RETURN r.roi_id AS id, r.name AS name")
+                # Retrieving edges
+                has_region_edges = session.run("MATCH (r:Region)-[h:HAS_REGION]-(s:Subject) RETURN s.subject_id AS source, r.roi_id AS target,"
+                                               "h.gm_volume AS gm_volume, h.regional_ct AS regional_ct")
+                functionally_connected_edges= session.run("MATCH (r1:Region)-[f:IS_FUNCTIONALLY_CONNECTED]-(r2:Region) RETURN r1.roi_id "
+                                                             "AS source, r2.roi_id AS target, f.corr_mci AS corr_mci, f.corr_cn AS corr_cn")
+                
+                # record.data() for dictionary conversion
+                subject_nodes = [record.data() for record in subject_nodes]
+                region_nodes = [record.data() for record in region_nodes]
+                has_region_edges = [record.data() for record in has_region_edges]
+                functionally_connected_edges = [record.data() for record in functionally_connected_edges]
+                return subject_nodes, region_nodes, has_region_edges, functionally_connected_edges
+            except Exception as e:
+                print(f"Error retrieving graph data: {e}")
+                return [], [], [], []
 
-edges_region = np.array([is_functionally_connected['Region1'] - 1, is_functionally_connected['Region2'] - 1], dtype=np.int64)
-data['region', 'is_functionally_connected', 'region'].edge_index = torch.tensor(edges_region, dtype=torch.long)
-data['region', 'rev_has_region', 'subject'].edge_index = data['subject', 'has_region', 'region'].edge_index.flip(0)
 
-# Definir los parámetros de validación cruzada
-k_folds = 5
-kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
-out_channels = 2
-num_layers = 2
+def normalize_indices(subject_df, region_df, has_region_df, functionally_connected_df):
+    # Create a mapping from Neo4j indices to a zero-based index
+    subject_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(subject_df['id'])}
+    region_id_map = {neo4j_id: idx for idx, neo4j_id in enumerate(region_df['id'])}
 
-# Guardar las métricas por fold
-fold_accuracies = []
-fold_f1_scores = []
-fold_precisions = []
-fold_recalls = []
-fold_conf_matrices = []
-fold_losses = []
-lr_values = []
+    # Normalizing subject-region edge indices so they go from 0-(max-1)
+    has_region_df['source'] = has_region_df['source'].map(subject_id_map)
+    has_region_df['target'] = has_region_df['target'].map(region_id_map)
 
-# Implementar K-Fold Cross-Validation
-for fold, (train_idx, val_idx) in enumerate(kf.split(subjects)):
-    print(f'Fold {fold + 1}/{k_folds}')
-    logging.info(f'Starting Fold {fold + 1}/{k_folds}')
+    # Normalize region-region functional connection edge indices
+    functionally_connected_df['source'] = functionally_connected_df['source'].map(region_id_map)
+    functionally_connected_df['target'] = functionally_connected_df['target'].map(region_id_map)
 
-    # Crear máscaras de entrenamiento y validación
-    train_mask = torch.zeros(len(subjects), dtype=torch.bool)
-    val_mask = torch.zeros(len(subjects), dtype=torch.bool)
-    train_mask[train_idx] = True
-    val_mask[val_idx] = True
+    return subject_df, region_df, has_region_df, functionally_connected_df
 
-    # Asignar las máscaras al grafo heterogéneo
-    data['subject'].train_mask = train_mask.to(device)
-    data['subject'].val_mask = val_mask.to(device)
-    data = data.to(device)
 
-    # Inicializar el modelo para este fold
-    model = HeteroGNN(hidden_channels=hidden_channels, out_channels=out_channels, num_layers=num_layers).to(device)
+# Conversion to suitable data types
+def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_connected_edges):
+
+    # Converting to pandas DataFrame format for the creation of tensors
+    subject_df = pd.DataFrame(subject_nodes)
+    region_df = pd.DataFrame(region_nodes)
+    has_region_df = pd.DataFrame(has_region_edges)
+    functionally_connected_df = pd.DataFrame(functionally_connected_edges)
+
+    # Maps categorical values to numerical ones
+    subject_df['sex'] = subject_df['sex'].map(sex_map)
+    subject_df['diagnosis'] = subject_df['diagnosis'].map(diagnosis_map)
+    # NOT COMPATIBLE WITH PYTHON
+    # Subject_id is a string so it is converted to an integer taking the last four digits
+    #has_region_df['source'] = (has_region_df['source'].str[-4:]).astype(int)
+    #has_region_df['target'] = (has_region_df['target'].str[-4:]).astype(int)
+    #functionally_connected_df['source'] = (functionally_connected_df['source'].str[-4:]).astype(int)
+    #functionally_connected_df['target'] = (functionally_connected_df['target'].str[-4:]).astype(int)
+
+    subject_df, region_df, has_region_df, functionally_connected_df = normalize_indices(subject_df, region_df, has_region_df, functionally_connected_df)
+
+    # Conversion to PyTorch tensors (multidimensional arrays)
+    # PyG object describing a heterogeneous graph (multiple node and/or edge types) in disjunct storage objects
+    data = HeteroData()
     
-    # Optimizer con weight_decay para regularización
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-5)
+    # Subject node feature matrix
+    # Structure: subject=torch.tensor([[age1, sex1], [age2, sex2],...])
+    data['subject'].x = torch.tensor(subject_df[['age', 'sex']].values, dtype=torch.float)
+    # Target to train against 
+    data['subject'].y = torch.tensor(subject_df['diagnosis'].values, dtype=torch.long)
 
-    # Scheduler para reducir el learning rate dinámicamente
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+    # Region node feature matrix
+    # Using index as dummy feature
+    # MAYBE HEMISPHERES???
+    data['region'].x = torch.tensor(region_df.index.values, dtype=torch.float).unsqueeze(1) 
 
-    epochs = 50
-    best_val_loss = float('inf')
-    patience = 10
-    patience_counter = 0
+    # Graph connectivity with shape [2, num_edges] for has_region edges
+    # Convert list to a single array to avoid efficiency warning
+    has_region_edge_index = np.array([has_region_df['source'].tolist(), has_region_df['target'].tolist()])
+    data[('region', 'has_region', 'subject')].edge_index = torch.tensor(
+        has_region_edge_index, dtype=torch.long)
+    # Has_region edge feature matrix with shape [num_edges, num_edge_features]= [num_edges, 2]
+    data[('region', 'has_region', 'subject')].edge_attr = torch.tensor(
+        has_region_df[['gm_volume', 'regional_ct']].values, dtype=torch.float)
 
-    epoch_train_losses = []
-    epoch_val_losses = []
+    # Graph connectivity with shape [2, num_edges] for is_functionally_connected edges
+    functionally_connected_edge_index = np.array([functionally_connected_df['source'].tolist(), functionally_connected_df['target'].tolist()])
+    data[('region', 'is_functionally_connected', 'region')].edge_index = torch.tensor(
+        functionally_connected_edge_index, dtype=torch.long)
+    # Is_functionally_connected edge feature matrix with shape [num_edges, num_edge_features]= [num_edges, 2]
+    data[('region', 'is_functionally_connected', 'region')].edge_attr = torch.tensor(
+        functionally_connected_df[['corr_mci', 'corr_cn']].values, dtype=torch.float)
 
-    for epoch in range(epochs):
-        model.train()
-        optimizer.zero_grad()
-        out = model(data.x_dict, data.edge_index_dict)
+    # Convert to dictionaries
+    data.edge_index_dict = {
+    ('region', 'has_region', 'subject'): data[('region', 'has_region', 'subject')].edge_index,
+    ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_index
+    #('region', 'rev_has_region', 'subject'): to_undirected(data[('subject', 'has_region', 'region')].edge_index)
+    }
 
-        train_out = out['subject'][data['subject'].train_mask]
-        target = torch.randint(0, 2, (train_out.size(0),)).to(device)
+    data.edge_attr_dict = {
+    ('region', 'has_region', 'subject'): data[('region', 'has_region', 'subject')].edge_attr,
+    ('region', 'is_functionally_connected', 'region'): data[('region', 'is_functionally_connected', 'region')].edge_attr
+    #('region', 'has_region', 'region'): data[('subject', 'has_region', 'region')].edge_attr,
+    }
 
-        loss = F.cross_entropy(train_out, target)
-        loss.backward()
-        optimizer.step()
+    print(data.is_undirected()) # Returns false
+    print("After ToUndirected:")
+    print(data.edge_index_dict)     
+    print(data.is_undirected())
+
+    return data
+
+
+# FOR DEBUGGING
+def check_hetero_data(x_dict, edge_index_dict, edge_attr_dict, expected_edge_types, model):
+    # Check node feature tensors
+    print("\nNode Features Check (x_dict):")
+    for node_type, features in x_dict.items():
+        print(f"- Node type: {node_type}")
+        print(f"  Type: {type(features)}, Shape: {features.shape}")
+        assert isinstance(features, torch.Tensor), f"{node_type} features are not a tensor!"
+        print("--------")
+        print(type(x_dict))
+
+    # Check edge index tensors
+    print("\nEdge Index Check (edge_index_dict):")
+    for edge_type in edge_index_dict:
+        assert edge_type in expected_edge_types, f"Edge type {edge_type} is not defined in the model's layers!"
+        print("All edge types are valid.")
+
+# FOR DEBUGGING
+def run_debug_checks(model, data):
+    # Extract expected edge types from model
+    expected_edge_types = set()
+    for conv_layer in model.convs:
+        expected_edge_types.update(conv_layer.convs.keys())
+    
+    # Now you have the expected edge types for all layers
+    print("Expected Edge Types from Model Layers:", expected_edge_types)
+
+    # Run the verification function to check all tensors
+    check_hetero_data(data.x_dict, data.edge_index_dict, data.edge_attr_dict, expected_edge_types, model)
+
+
+def main():
+    # Initializing GraphManager and retrieving data
+    graph_manager = GraphManager(uri, auth)
+    subject_nodes, region_nodes, has_region_edges, functionally_connected_edges = graph_manager.get_graph_data()
+
+    # Preprocessing data
+    data = transform_data(subject_nodes, region_nodes, has_region_edges, functionally_connected_edges)
+    print("Data transformation completed.")
+    print(data)
+    
+    # Close connection
+    graph_manager.close()
+
+    # 20% of the nodes will be randomly selected for the test and validation sets
+    #transform = RandomNodeSplit(num_test=0.1, num_val=0.1,key='subject')
+    #transform(data)
+    
+    num_subjects = data['subject'].x.size(0)  # Total number of 'subject' nodes
+    # Set proportions for train/val/test splits
+    train_ratio = 0.8
+    val_ratio = 0.1
+    test_ratio = 0.1
+    # Compute sizes for each split
+    train_size = int(train_ratio * num_subjects)
+    val_size = int(val_ratio * num_subjects)
+    test_size = num_subjects - train_size - val_size  # Ensure sum adds to num_subjects
+    print(test_size)
+    # Generate a random permutation of node indices
+    perm = torch.randperm(num_subjects)
+
+    # Initialize masks for train, val, and test sets
+    train_mask = torch.zeros(num_subjects, dtype=torch.bool)
+    val_mask = torch.zeros(num_subjects, dtype=torch.bool)
+    test_mask = torch.zeros(num_subjects, dtype=torch.bool)
+
+    # Assign True values to the appropriate split indices
+    train_mask[perm[:train_size]] = True
+    val_mask[perm[train_size:train_size + val_size]] = True
+    test_mask[perm[train_size + val_size:]] = True
+
+    # Assign the masks to the 'subject' node type
+    data['subject'].train_mask = train_mask
+    data['subject'].val_mask = val_mask
+    data['subject'].test_mask = test_mask
+
+    #   Verify the mask creation
+    print("Train Mask:", data['subject'].train_mask)
+    print("Validation Mask:", data['subject'].val_mask)
+    print("Test Mask:", data['subject'].test_mask)
         
-        # Guardar el learning rate actual
-        lr_values.append(optimizer.param_groups[0]['lr'])
+    # Initialization of the GNN model
+    #num_node_features= 2 #sex, age
+    num_labels= 2 #CN/MCI
+    # 50% of the node features are randomly set to zero in each layer during training to avoid overfitting
+    pred = HeteroGNN(hidden_channels=64, out_channels=num_labels, num_layers=2).to(device)
 
-        epoch_train_losses.append(loss.item())
+    run_debug_checks(pred, data)
 
-        # Validación
-        model.eval()
-        with torch.no_grad():
-            val_out = out['subject'][data['subject'].val_mask]
-            val_predictions = val_out.argmax(dim=1)
-            val_target = torch.randint(0, 2, (val_out.size(0),)).to(device)
+    # Using Adam optimization algorithm
+    optimizer = torch.optim.Adam(pred.parameters(), lr=0.001, weight_decay=1e-4)
+    print(f"Data.x_dict type: {type(data.x_dict)}")
+    # Training and evaluation of the model
+    training_model(pred, data, optimizer)
+    evaluation_model(pred, data)
 
-            val_loss = F.cross_entropy(val_out, val_target)
-            epoch_val_losses.append(val_loss.item())
-
-            scheduler.step(val_loss)
-
-            if val_loss.item() < best_val_loss:
-                best_val_loss = val_loss.item()
-                patience_counter = 0
-                # Guardar el mejor modelo
-                torch.save(model.state_dict(), f'model_fold_{fold+1}.pth')
-            else:
-                patience_counter += 1
-
-            # Aplicar early stopping si no mejora la pérdida de validación
-            if patience_counter >= patience:
-                print(f"Early stopping en la epoch {epoch+1}")
-                break
-
-        if epoch % 10 == 0 or epoch == epochs - 1:
-            print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item()}')
-
-    # Cargar el mejor modelo guardado
-    model.load_state_dict(torch.load(f'model_fold_{fold+1}.pth'))
-    model.eval()
-
-    # Calcular métricas
-    accuracy = accuracy_score(val_target.cpu().numpy(), val_predictions.cpu().numpy())
-    f1 = f1_score(val_target.cpu().numpy(), val_predictions.cpu().numpy())
-    precision = precision_score(val_target.cpu().numpy(), val_predictions.cpu().numpy())
-    recall = recall_score(val_target.cpu().numpy(), val_predictions.cpu().numpy())
-
-    fold_accuracies.append(accuracy)
-    fold_f1_scores.append(f1)
-    fold_precisions.append(precision)
-    fold_recalls.append(recall)
-
-    cm = confusion_matrix(val_target.cpu().numpy(), val_predictions.cpu().numpy())
-    fold_conf_matrices.append(cm)
-
-    # Mostrar y guardar la matriz de confusión
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['CN', 'MCI'])
-    disp.plot(cmap=plt.cm.Blues)
-    plt.title(f"Matriz de Confusión - Fold {fold + 1}")
-    plt.savefig(f'confusion_matrix_fold_{fold + 1}.png')
-    plt.close()
-
-    # Guardar pérdidas y métricas de cada fold
-    fold_losses.append((epoch_train_losses, epoch_val_losses))
-
-# Graficar pérdidas de entrenamiento y validación
-plt.figure()
-for i, (train_losses, val_losses) in enumerate(fold_losses):
-    plt.plot(range(len(train_losses)), train_losses, label=f'Train Fold {i+1}')
-    plt.plot(range(len(val_losses)), val_losses, label=f'Val Fold {i+1}', linestyle='--')
-
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title('Training and Validation Loss Over Epochs')
-plt.legend()
-plt.grid(True)
-plt.savefig('train_val_loss.png')
-plt.show()
-
-# Graficar métricas por fold
-plt.figure()
-plt.plot(range(1, k_folds + 1), fold_accuracies, marker='o', label="Accuracy per Fold")
-plt.plot(range(1, k_folds + 1), fold_f1_scores, marker='x', label="F1-Score per Fold")
-plt.plot(range(1, k_folds + 1), fold_precisions, marker='s', label="Precision per Fold")
-plt.plot(range(1, k_folds + 1), fold_recalls, marker='d', label="Recall per Fold")
-plt.xlabel("Fold")
-plt.ylabel("Score")
-plt.title("Metrics over K-Folds")
-plt.legend()
-plt.grid(True)
-plt.savefig("metrics_per_fold.png")
-plt.show()
-
-# Graficar el learning rate durante el entrenamiento
-plt.figure()
-plt.plot(range(len(lr_values)), lr_values)
-plt.xlabel("Step")
-plt.ylabel("Learning Rate")
-plt.title("Learning Rate over Training Steps")
-plt.grid(True)
-plt.savefig("learning_rate_over_steps.png")
-plt.show()
-
-# Calcular y mostrar la matriz de confusión promedio
-average_cm = np.mean(fold_conf_matrices, axis=0)
-
-# Mostrar y guardar la matriz de confusión promedio
-disp = ConfusionMatrixDisplay(confusion_matrix=average_cm, display_labels=['CN', 'MCI'])
-disp.plot(cmap=plt.cm.Blues)
-plt.title(f"Matriz de Confusión Promedio")
-plt.savefig('average_confusion_matrix.png')
-plt.show()
-
-# Guardar las métricas promedio
-with open("average_metrics.txt", "w") as f:
-    avg_accuracy = np.mean(fold_accuracies)
-    avg_f1 = np.mean(fold_f1_scores)
-    avg_precision = np.mean(fold_precisions)
-    avg_recall = np.mean(fold_recalls)
-
-    f.write(f"Métricas promedio tras validación cruzada:\n")
-    f.write(f"Precision: {avg_precision:.4f}\n")
-    f.write(f"Recall: {avg_recall:.4f}\n")
-    f.write(f"F1-Score: {avg_f1:.4f}\n")
-    f.write(f"Accuracy: {avg_accuracy:.4f}\n")
-
-print("Validación cruzada completada y resultados guardados.")
-
-# Graficar la curva ROC para cada fold
-plt.figure()
-for i, (train_idx, val_idx) in enumerate(kf.split(subjects)):
-    val_out = out['subject'][data['subject'].val_mask]
-    val_predictions = val_out.argmax(dim=1).cpu().numpy()
-    val_target = torch.randint(0, 2, (val_out.size(0),)).cpu().numpy()
-
-    fpr, tpr, _ = roc_curve(val_target, val_predictions)
-    roc_auc = auc(fpr, tpr)
-    plt.plot(fpr, tpr, lw=2, label=f'ROC fold {i+1} (AUC = {roc_auc:.2f})')
-
-plt.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r', alpha=.8)
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('ROC Curve for Each Fold')
-plt.legend(loc="lower right")
-plt.savefig('roc_curve.png')
-plt.show()
-
-# Graficar la curva Precision-Recall para cada fold
-plt.figure()
-for i, (train_idx, val_idx) in enumerate(kf.split(subjects)):
-    val_out = out['subject'][data['subject'].val_mask]
-    val_predictions = val_out.argmax(dim=1).cpu().numpy()
-    val_target = torch.randint(0, 2, (val_out.size(0),)).cpu().numpy()
-
-    precision, recall, _ = precision_recall_curve(val_target, val_predictions)
-    plt.plot(recall, precision, lw=2, label=f'Precision-Recall fold {i+1}')
-
-plt.xlabel('Recall')
-plt.ylabel('Precision')
-plt.title('Precision-Recall Curve for Each Fold')
-plt.legend(loc="lower left")
-plt.savefig('precision_recall_curve.png')
-plt.show()
-
-print("Visualización de curvas ROC y Precision-Recall completadas.")
+if __name__ == "__main__":
+    main()
