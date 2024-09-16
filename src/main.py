@@ -11,6 +11,8 @@ from sklearn.model_selection import KFold
 from torch_geometric.data import HeteroData
 from model import HeteroGNN
 
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 # Configuración de GPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -18,19 +20,15 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logging.basicConfig(filename='training.log', level=logging.INFO)
 
 # Rutas a los archivos CSV en la carpeta 'data'
-data_dir = '../data'
+data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
 subjects_path = os.path.join(data_dir, 'subjects.csv')
 has_region_path = os.path.join(data_dir, 'has_region.csv')
-is_connected_to_CN_path = os.path.join(data_dir, 'is_connected_to_CN.csv')
-is_connected_to_MCI_path = os.path.join(data_dir, 'is_connected_to_MCI.csv')
 is_functionally_connected_path = os.path.join(data_dir, 'is_functionally_connected.csv')
 regions_path = os.path.join(data_dir, 'regions.csv')
 
 # Cargar CSVs
 subjects = pd.read_csv(subjects_path)
 has_region = pd.read_csv(has_region_path)
-is_connected_to_CN = pd.read_csv(is_connected_to_CN_path)
-is_connected_to_MCI = pd.read_csv(is_connected_to_MCI_path)
 is_functionally_connected = pd.read_csv(is_functionally_connected_path)
 regions = pd.read_csv(regions_path)
 
