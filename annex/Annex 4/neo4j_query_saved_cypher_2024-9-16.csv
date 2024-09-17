@@ -1,0 +1,33 @@
+name,description,query,id,parentId,isFolder
+Subjects,,"LOAD CSV WITH HEADERS FROM 'https://raw.githubusercontent.com/IsabelMartinez2022/DetectionOfMCI_TFG/main/data/subjects.csv' AS row
+MERGE (s:Subject {subject_id: row.subject_id})
+ON CREATE SET
+   s.age = toInteger(row.age),
+   s.sex = row.sex,
+   s.diagnosis = row.diagnosis;",0,,false
+Regions,,"LOAD CSV WITH HEADERS FROM 'https://raw.githubusercontent.com/IsabelMartinez2022/DetectionOfMCI_TFG/main/data/regions.csv' AS row
+MERGE (r:Region {roi_id: row.roi_id})
+ON CREATE SET
+   r.roi_name = row.roi_name;",1,,false
+HasRegion,,"LOAD CSV WITH HEADERS FROM 'https://raw.githubusercontent.com/IsabelMartinez2022/DetectionOfMCI_TFG/main/data/has_region.csv' AS row
+MATCH (s:Subject {subject_id: row.subject_id})
+MATCH (r:Region {roi_id: row.region_id})
+MERGE (s)-[rel:HAS_REGION]->(r)
+ON CREATE SET 
+    rel.gmv = toFloat(row.volume),
+    rel.ct = toFloat(row.cortical_thickness); ",2,,false
+IsFunctionallyConnected,,"LOAD CSV WITH HEADERS FROM 'https://raw.githubusercontent.com/IsabelMartinez2022/DetectionOfMCI_TFG/main/data/is_functionally_connected.csv' AS row
+MATCH (r1:Region {roi_id: row.Region1})
+MATCH (r2:Region {roi_id: row.Region2})
+MERGE (r1)-[:IS_FUNCTIONALLY_CONNECTED {
+    corr_MCI: CASE 
+                WHEN row.Median_Correlation_MCI CONTAINS 'Inf' THEN 3.0
+                WHEN row.Median_Correlation_MCI CONTAINS '-Inf' THEN -3.0
+                ELSE toFloat(row.Median_Correlation_MCI) 
+              END,
+    corr_CN: CASE 
+                WHEN row.Median_Correlation_CN CONTAINS 'Inf' THEN 3.0
+                WHEN row.Median_Correlation_CN CONTAINS '-Inf' THEN -3.0
+                ELSE toFloat(row.Median_Correlation_CN) 
+              END
+}]-(r2);",3,,false
