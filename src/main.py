@@ -44,8 +44,8 @@ class GraphManager:
                 subject_nodes = session.run("MATCH (s:Subject) RETURN s.subject_id AS id, s.diagnosis AS diagnosis, s.age AS age, s.sex AS sex")
                 region_nodes = session.run("MATCH (r:Region) RETURN r.roi_id AS id, r.name AS name")
                 # Retrieving edges
-                has_region_edges = session.run("MATCH (r:Region)-[h:HAS_REGION]-(s:Subject) RETURN s.subject_id AS source, r.roi_id AS target,"
-                                               "h.gm_volume AS gm_volume, h.regional_ct AS regional_ct")
+                has_region_edges = session.run("MATCH (s:Subject)-[h:HAS_REGION]-(r:Region) RETURN s.subject_id AS source, r.roi_id AS target,"
+                                               "h.gmv AS gm_volume, h.ct AS regional_ct")
                 functionally_connected_edges= session.run("MATCH (r1:Region)-[f:IS_FUNCTIONALLY_CONNECTED]-(r2:Region) RETURN r1.roi_id "
                                                              "AS source, r2.roi_id AS target, f.corr_mci AS corr_mci, f.corr_cn AS corr_cn")
                 
