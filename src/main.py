@@ -111,6 +111,10 @@ def transform_data(subject_nodes, region_nodes, has_region_edges, functionally_c
     # Using index as dummy feature
     # MAYBE HEMISPHERES???
     data['region'].x = torch.tensor(region_df.index.values, dtype=torch.float).unsqueeze(1) 
+    # Changing region features so they match hidden_channels dimensions
+    hidden_channels = 64
+    data['region'].x = torch.randn(200, hidden_channels) 
+
 
     # Graph connectivity with shape [2, num_edges] for has_region edges
     # Convert list to a single array to avoid efficiency warning
@@ -211,7 +215,7 @@ def main():
     # Generate a random permutation of node indices
     perm = torch.randperm(num_subjects)
 
-    # Initialize masks for train, val, and test sets
+    # Initializing masks for train, val, and test sets
     train_mask = torch.zeros(num_subjects, dtype=torch.bool)
     val_mask = torch.zeros(num_subjects, dtype=torch.bool)
     test_mask = torch.zeros(num_subjects, dtype=torch.bool)
@@ -221,15 +225,10 @@ def main():
     val_mask[perm[train_size:train_size + val_size]] = True
     test_mask[perm[train_size + val_size:]] = True
 
-    # Assign the masks to the 'subject' node type
+    # Assigning the masks to the 'subject' node type
     data['subject'].train_mask = train_mask
     data['subject'].val_mask = val_mask
     data['subject'].test_mask = test_mask
-
-    #   Verify the mask creation
-    print("Train Mask:", data['subject'].train_mask)
-    print("Validation Mask:", data['subject'].val_mask)
-    print("Test Mask:", data['subject'].test_mask)
         
     # Initialization of the GNN model
     #num_node_features= 2 #sex, age
